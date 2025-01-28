@@ -1,157 +1,235 @@
-import { Loader2, Mic, Square, Volume2 } from 'lucide-react';
-import React, { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from "react";
 
-interface AudioRecorderProps {
-  onTranscriptionReceived: (text: string) => void;
+interface SpeechRecognitionEvent extends Event {
+  results: SpeechRecognitionResultList;
 }
 
-const AudioRecorder: React.FC<AudioRecorderProps> = ({ onTranscriptionReceived }) => {
-  const [isRecording, setIsRecording] = useState(false);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [currentTranscription, setCurrentTranscription] = useState('');
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const websocketRef = useRef<WebSocket | null>(null);
-  const audioContextRef = useRef<AudioContext | null>(null);
+interface SpeechRecognitionError extends Event {
+  error: string;
+}
 
+interface WebkitSpeechRecognition {
+  new(): SpeechRecognition;
+}
+
+interface SpeechRecognition extends EventTarget {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onresult: ((event: SpeechRecognitionEvent) => void) | null;
+  onend: (() => void) | null;
+  onerror: ((event: SpeechRecognitionError) => void) | null;
+  start: () => void;
+  stop: () => void;
+}
+
+declare global {
+  interface Window {
+    webkitSpeechRecognition: WebkitSpeechRecognition;
+    AudioContext: typeof AudioContext;
+    webkitAudioContext: typeof AudioContext;
+  }
+}
+
+function App(): JSX.Element {
+  const [mic, setMic] = useState<MediaStream | null>(null);
+  const [isRunning, setRunning] = useState<boolean>(false);
+  const [transcriber, setTranscriber] = useState<SpeechRecognition | null>(null);
+  const [result, setResult] = useState<string>("");
+  const runningRef = useRef<boolean>(isRunning);
+  const [ans, setAns] = useState<string>("");
+  const animationFrameRef = useRef<number>();
+  const audioContextRef = useRef<AudioContext>();
+
+  // Setup microphone only
   useEffect(() => {
-    // Initialize WebSocket connection
-    websocketRef.current = new WebSocket('ws://localhost:5000/stream');
+    navigator.mediaDevices.getUserMedia({ audio: true })
+      .then((stream) => setMic(stream))
+      .catch(() => setMic(null));
+  }, []);
 
-    websocketRef.current.onmessage = async (event) => {
-      const response = JSON.parse(event.data);
+  // Handle animation and audio processing
+  useEffect(() => {
+    runningRef.current = isRunning;
 
-      if (response.type === 'transcription') {
-        setCurrentTranscription(response.text);
-        onTranscriptionReceived(response.text);
-      } else if (response.type === 'audio') {
-        // Handle converted audio from RVC
-        if (!audioContextRef.current) {
-          audioContextRef.current = new AudioContext();
-        }
+    if (!mic) return;
 
-        const audioData = Uint8Array.from(atob(response.audio), c => c.charCodeAt(0));
-        const audioBuffer = await audioContextRef.current.decodeAudioData(audioData.buffer);
+    if (!isRunning) {
+      const canvas = document.getElementById("canvas") as HTMLCanvasElement;
+      createDefaultCircle(canvas);
 
-        const source = audioContextRef.current.createBufferSource();
-        source.buffer = audioBuffer;
-        source.connect(audioContextRef.current.destination);
-        source.start();
-        setIsPlaying(true);
-
-        source.onended = () => {
-          setIsPlaying(false);
-        };
+      // Cleanup previous audio context
+      if (audioContextRef.current) {
+        audioContextRef.current.close();
       }
-    };
+
+      // Cancel previous animation frame
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+      }
+
+      return;
+    }
+
+    const canvas = document.getElementById("canvas") as HTMLCanvasElement;
+    const ctx = canvas.getContext("2d") as CanvasRenderingContext2D;
+
+    // Create new audio context
+    audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
+    const source = audioContextRef.current.createMediaStreamSource(mic);
+    const analyser = audioContextRef.current.createAnalyser();
+    analyser.fftSize = 256;
+    source.connect(analyser);
+    const frequencyBufferLength = analyser.frequencyBinCount;
+    const frequencyData = new Uint8Array(frequencyBufferLength);
+    const sensitivity = 50;
+
+    function draw(): void {
+      if (!runningRef.current) {
+        createDefaultCircle(canvas);
+        return;
+      }
+
+      animationFrameRef.current = requestAnimationFrame(draw);
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+      const centerX = canvas.width / 2;
+      const centerY = canvas.height / 2;
+      analyser.getByteFrequencyData(frequencyData);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.lineWidth = 2;
+      ctx.fillStyle = "white";
+      ctx.beginPath();
+
+      const angleOffset = Math.PI / (frequencyBufferLength - 1);
+      let offsetHeight = 0;
+      let cos = 0;
+      let sin = 0;
+      let x = 0;
+      let y = 0;
+
+      // First wave (outer)
+      for (let i = 0; i < frequencyBufferLength; i++) {
+        offsetHeight = frequencyData[i] * 200 / 255;
+        cos = Math.cos(i * angleOffset);
+        sin = Math.sin(i * angleOffset);
+        x = centerX + cos * 110 + cos * offsetHeight;
+        y = centerY + sin * 110 + sin * offsetHeight;
+        if (i === 0) {
+          ctx.moveTo(x, y);
+        } else {
+          ctx.lineTo(x, y);
+        }
+      }
+
+      // Second wave (inner)
+      for (let i = 0; i < frequencyBufferLength; i++) {
+        offsetHeight = frequencyData[i] * sensitivity / 255;
+        cos = Math.cos(-i * angleOffset);
+        sin = Math.sin(-i * angleOffset);
+        x = centerX + cos * 110 + cos * offsetHeight;
+        y = centerY + sin * 110 + sin * offsetHeight;
+        ctx.lineTo(x, y);
+      }
+
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    draw();
 
     return () => {
-      if (websocketRef.current) {
-        websocketRef.current.close();
+      if (audioContextRef.current) {
+        audioContextRef.current.close();
+      }
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
       }
     };
-  }, [onTranscriptionReceived]);
+  }, [mic, isRunning]);
 
-  const startRecording = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mediaRecorder = new MediaRecorder(stream, {
-        mimeType: 'audio/webm;codecs=opus'
-      });
-      mediaRecorderRef.current = mediaRecorder;
+  function createDefaultCircle(canvas: HTMLCanvasElement): void {
+    const ctx = canvas.getContext("2d") as CanvasRenderingContext2D;
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    const centerX = canvas.width / 2;
+    const centerY = canvas.height / 2;
+    ctx.beginPath();
+    ctx.fillStyle = "white";
+    ctx.arc(centerX, centerY, 100, 0, 2 * Math.PI);
+    ctx.closePath();
+    ctx.fill();
+  }
 
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0 && websocketRef.current?.readyState === WebSocket.OPEN) {
-          // Convert blob to base64 and send to server
-          const reader = new FileReader();
-          reader.onloadend = () => {
-            const base64Audio = (reader.result as string).split(',')[1];
-            websocketRef.current?.send(JSON.stringify({
-              type: 'audio',
-              audio: base64Audio
-            }));
-          };
-          reader.readAsDataURL(event.data);
+  function setupTranscriber(): void {
+    const tr = new window.webkitSpeechRecognition();
+
+    tr.continuous = true;
+    tr.interimResults = true;
+    tr.lang = "en-US";
+
+    tr.onresult = (event: SpeechRecognitionEvent) => {
+      let res = '';
+      for (let i = 0; i < event.results.length; i++) {
+        if (event.results[i].isFinal) {
+          res += event.results[i][0].transcript;
         }
-      };
+      }
+      setResult(res);
+    };
 
-      // Send smaller chunks more frequently for real-time processing
-      mediaRecorder.start(100); // Send 100ms chunks
-      setIsRecording(true);
-    } catch (error) {
-      console.error('Error accessing microphone:', error);
-      alert('Error accessing microphone. Please ensure microphone permissions are granted.');
+    tr.onend = () => {
+      // Restart if still running
+      if (runningRef.current) {
+        tr.start();
+      }
+    };
+
+    tr.onerror = (event: SpeechRecognitionError) => {
+      console.error("Speech recognition error:", event.error);
+      setRunning(false);
+    };
+
+    tr.start(); // Start immediately after setup
+    setTranscriber(tr);
+  }
+
+  function toggleListening(): void {
+    if (isRunning) {
+      setRunning(false);
+      if (transcriber) {
+        transcriber.stop();
+        setTranscriber(null);
+      }
+    } else {
+      if (!mic) return;
+      setResult("");
+      setRunning(true);
+      setupTranscriber(); // Setup and start new transcriber
     }
-  };
-
-  const stopRecording = () => {
-    if (mediaRecorderRef.current && isRecording) {
-      mediaRecorderRef.current.stop();
-      setIsRecording(false);
-
-      // Stop all tracks on the stream
-      mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
-
-      // Send end-of-stream signal to server
-      websocketRef.current?.send(JSON.stringify({ type: 'end' }));
-    }
-  };
+  }
 
   return (
-    <div className="flex flex-col items-center gap-4 p-4">
-      <div className="flex gap-4">
-        {!isRecording ? (
-          <button
-            onClick={startRecording}
-            className="p-4 bg-blue-500 text-white rounded-full hover:bg-blue-600 transition-colors"
-            disabled={isProcessing}
-          >
-            <Mic className="w-6 h-6" />
-          </button>
-        ) : (
-          <button
-            onClick={stopRecording}
-            className="p-4 bg-red-500 text-white rounded-full hover:bg-red-600 transition-colors"
-          >
-            <Square className="w-6 h-6" />
-          </button>
-        )}
-      </div>
-
-      {isProcessing && (
-        <div className="flex items-center gap-2 text-gray-600">
-          <Loader2 className="w-4 h-4 animate-spin" />
-          <span>Processing audio...</span>
-        </div>
-      )}
-
-      {isPlaying && (
-        <div className="flex items-center gap-2 text-green-600">
-          <Volume2 className="w-4 h-4 animate-pulse" />
-          <span>Playing converted audio...</span>
-        </div>
-      )}
-
-      {currentTranscription && (
-        <div className="mt-4 p-4 bg-gray-50 rounded-lg w-full">
-          <p className="text-gray-700">{currentTranscription}</p>
-        </div>
-      )}
+    <div className="w-screen h-screen bg-slate-900 relative">
+      <img
+        src="test.gif"
+        alt="microphone"
+        height={150}
+        width={150}
+        className="absolute top-[50%] left-[50%] -translate-x-1/2 -translate-y-1/2 cursor-pointer z-10"
+        onClick={toggleListening}
+      />
+      <canvas className="w-full h-full" id="canvas">
+        Your browser does not support the HTML5 canvas tag.
+      </canvas>
+      <p id="result" className="absolute bottom-0 left-0 w-screen text-white text-center h-[20%] overflow-y-auto">
+        {result}
+      </p>
+      <p className="absolute top-0 left-0 w-[35%] text-white text-center h-[80%] overflow-y-auto p-10">
+        {ans}
+      </p>
     </div>
   );
-};
-
-const App: React.FC = () => {
-  const [transcription, setTranscription] = useState<string>('');
-
-  return (
-    <div className="min-h-screen bg-gray-100 p-8">
-      <div className="max-w-2xl mx-auto bg-white rounded-lg shadow-lg p-6">
-        <h1 className="text-2xl font-bold mb-6 text-center">Real-time Audio Transcription</h1>
-        <AudioRecorder onTranscriptionReceived={setTranscription} />
-      </div>
-    </div>
-  );
-};
+}
 
 export default App;
