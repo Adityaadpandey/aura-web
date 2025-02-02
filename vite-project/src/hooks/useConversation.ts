@@ -19,6 +19,8 @@ Important:
 Please respond in this style to make our conversation more engaging!
 `;
 
+import { sentimental_prompts } from "../prompts/sentimanetal";
+
 interface UseConversationResult {
   isLoading: boolean;
   error: string | null;
@@ -51,7 +53,7 @@ export function useConversation(): UseConversationResult {
       setError(null);
       processingRef.current = true;
 
-      const fullPrompt = `${PERSONALITY_PROMPT}
+      const fullPrompt = `${sentimental_prompts}
 
 Previous messages are not relevant. Respond only to this message:
 User: ${input}
@@ -74,7 +76,7 @@ Response:`;
           setError(errorMessage);
           setIsLoading(false);
           processingRef.current = false;
-          onStream("Sorry, I couldn't process that request. Could you try again? 😅");
+          onStream("Sorry, I couldn't process that request. Could you try again? ");
         }
       );
     } catch (err) {
