@@ -1,248 +1,104 @@
-import { useEffect, useRef, useState } from "react";
-
-interface SpeechRecognitionEvent extends Event {
-  results: SpeechRecognitionResultList;
-}
-
-interface SpeechRecognitionError extends Event {
-  error: string;
-}
-
-interface WebkitSpeechRecognition {
-  new(): SpeechRecognition;
-}
-
-interface SpeechRecognition extends EventTarget {
-  continuous: boolean;
-  interimResults: boolean;
-  lang: string;
-  onresult: ((event: SpeechRecognitionEvent) => void) | null;
-  onend: (() => void) | null;
-  onerror: ((event: SpeechRecognitionError) => void) | null;
-  start: () => void;
-  stop: () => void;
-}
-
-declare global {
-  interface Window {
-    webkitSpeechRecognition: WebkitSpeechRecognition;
-    AudioContext: typeof AudioContext;
-    webkitAudioContext: typeof AudioContext;
-  }
-}
+import { useCallback, useEffect, useRef, useState } from "react";
+import { AudioVisualizer } from "./components/AudioVisualizer";
+import { useConversation } from "./hooks/useConversation";
+import { useMicrophone } from "./hooks/useMicrophone";
+import { useSpeechRecognition } from "./hooks/useSpeechRecognition";
+import { useSpeechSynthesis } from "./hooks/useSpeechSynthesis";
 
 function App(): JSX.Element {
-  const [mic, setMic] = useState<MediaStream | null>(null);
-  const [isRunning, setRunning] = useState<boolean>(false);
-  const [transcriber, setTranscriber] = useState<SpeechRecognition | null>(null);
-  const [result, setResult] = useState<string>("");
-  const runningRef = useRef<boolean>(isRunning);
-  const [ans, setAns] = useState<string>("");
-  const animationFrameRef = useRef<number>();
-  const audioContextRef = useRef<AudioContext>();
+  const [isRunning, setRunning] = useState(false);
+  const [response, setResponse] = useState("");
+  const { stream: mic, error: micError, isAvailable: isMicAvailable } = useMicrophone();
+  const { speak, stop: stopSpeaking } = useSpeechSynthesis();
+  const { isLoading, processUserInput, error: aiError, cancelResponse } = useConversation();
+  const processingRef = useRef(false);
 
+  // Cleanup on unmount
   useEffect(() => {
-    navigator.mediaDevices.getUserMedia({ audio: true })
-      .then((stream) => setMic(stream))
-      .catch(() => setMic(null));
-  }, []);
+    return () => {
+      stopSpeaking();
+      cancelResponse();
+    };
+  }, [stopSpeaking, cancelResponse]);
 
-  useEffect(() => {
-    runningRef.current = isRunning;
+  const handleStreamingResponse = useCallback((text: string) => {
+    setResponse(prev => {
+      // Add a space between sentences if needed
+      const needsSpace = prev.length > 0 && !prev.endsWith(' ') && !text.startsWith(' ');
+      return prev + (needsSpace ? ' ' : '') + text;
+    });
+    speak(text);
+  }, [speak]);
 
-    if (!mic) return;
-
-    if (!isRunning) {
-      const canvas = document.getElementById("canvas") as HTMLCanvasElement;
-      createDefaultCircle(canvas);
-
-      if (audioContextRef.current) {
-        audioContextRef.current.close();
-      }
-
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current);
-      }
-
+  const handleTranscriptComplete = useCallback(async (text: string) => {
+    if (processingRef.current || !text.trim()) {
       return;
     }
 
-    const canvas = document.getElementById("canvas") as HTMLCanvasElement;
-    const ctx = canvas.getContext("2d") as CanvasRenderingContext2D;
+    try {
+      processingRef.current = true;
 
-    audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
-    const source = audioContextRef.current.createMediaStreamSource(mic);
-    const analyser = audioContextRef.current.createAnalyser();
-    analyser.fftSize = 256;
-    source.connect(analyser);
-    const frequencyBufferLength = analyser.frequencyBinCount;
-    const frequencyData = new Uint8Array(frequencyBufferLength);
-    const sensitivity = 50;
+      // Stop any ongoing speech and response
+      stopSpeaking();
+      cancelResponse();
 
-    function draw(): void {
-      if (!runningRef.current) {
-        createDefaultCircle(canvas);
-        return;
-      }
+      // Clear previous response
+      setResponse("");
 
-      animationFrameRef.current = requestAnimationFrame(draw);
-      canvas.width = 600; // Fixed width
-      canvas.height = 600; // Fixed height
-      const centerX = canvas.width / 2;
-      const centerY = canvas.height / 2;
-      analyser.getByteFrequencyData(frequencyData);
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-      // Add gradient background
-      const gradient = ctx.createRadialGradient(centerX, centerY, 0, centerX, centerY, 300);
-      gradient.addColorStop(0, '#4338ca');
-      gradient.addColorStop(1, '#312e81');
-      ctx.fillStyle = gradient;
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-      ctx.lineWidth = 2;
-      ctx.fillStyle = "rgba(255, 255, 255, 0.8)";
-      ctx.beginPath();
-
-      const angleOffset = Math.PI / (frequencyBufferLength - 1);
-      let offsetHeight = 0;
-      let cos = 0;
-      let sin = 0;
-      let x = 0;
-      let y = 0;
-
-      // First wave (outer)
-      for (let i = 0; i < frequencyBufferLength; i++) {
-        offsetHeight = frequencyData[i] * 200 / 255;
-        cos = Math.cos(i * angleOffset);
-        sin = Math.sin(i * angleOffset);
-        x = centerX + cos * 110 + cos * offsetHeight;
-        y = centerY + sin * 110 + sin * offsetHeight;
-        if (i === 0) {
-          ctx.moveTo(x, y);
-        } else {
-          ctx.lineTo(x, y);
-        }
-      }
-
-      // Second wave (inner)
-      for (let i = 0; i < frequencyBufferLength; i++) {
-        offsetHeight = frequencyData[i] * sensitivity / 255;
-        cos = Math.cos(-i * angleOffset);
-        sin = Math.sin(-i * angleOffset);
-        x = centerX + cos * 110 + cos * offsetHeight;
-        y = centerY + sin * 110 + sin * offsetHeight;
-        ctx.lineTo(x, y);
-      }
-
-      ctx.closePath();
-      ctx.fill();
-
-      // Add glow effect
-      ctx.shadowBlur = 20;
-      ctx.shadowColor = "rgba(255, 255, 255, 0.5)";
+      // Process through Gemini and handle streaming response
+      await processUserInput(text, handleStreamingResponse);
+    } finally {
+      processingRef.current = false;
     }
+  }, [processUserInput, handleStreamingResponse, stopSpeaking, cancelResponse]);
 
-    draw();
+  const {
+    transcript,
+    interimTranscript,
+    startListening,
+    stopListening,
+    resetTranscript
+  } = useSpeechRecognition(handleTranscriptComplete);
 
-    return () => {
-      if (audioContextRef.current) {
-        audioContextRef.current.close();
-      }
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current);
-      }
-    };
-  }, [mic, isRunning]);
-
-  function createDefaultCircle(canvas: HTMLCanvasElement): void {
-    const ctx = canvas.getContext("2d") as CanvasRenderingContext2D;
-    canvas.width = 600; // Fixed width
-    canvas.height = 600; // Fixed height
-    const centerX = canvas.width / 2;
-    const centerY = canvas.height / 2;
-
-    // Add gradient background
-    const gradient = ctx.createRadialGradient(centerX, centerY, 0, centerX, centerY, 300);
-    gradient.addColorStop(0, '#4338ca');
-    gradient.addColorStop(1, '#312e81');
-    ctx.fillStyle = gradient;
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    // Add glow effect
-    ctx.shadowBlur = 20;
-    ctx.shadowColor = "rgba(255, 255, 255, 0.5)";
-
-    ctx.beginPath();
-    ctx.fillStyle = "rgba(255, 255, 255, 0.8)";
-    ctx.arc(centerX, centerY, 100, 0, 2 * Math.PI);
-    ctx.closePath();
-    ctx.fill();
-  }
-
-  function setupTranscriber(): void {
-    const tr = new window.webkitSpeechRecognition();
-
-    tr.continuous = true;
-    tr.interimResults = true;
-    tr.lang = "en-US";
-
-    tr.onresult = (event: SpeechRecognitionEvent) => {
-      let res = '';
-      for (let i = 0; i < event.results.length; i++) {
-        if (event.results[i].isFinal) {
-          res += event.results[i][0].transcript;
-        }
-      }
-      setResult(res);
-    };
-
-    tr.onend = () => {
-      if (runningRef.current) {
-        tr.start();
-      }
-    };
-
-    tr.onerror = (event: SpeechRecognitionError) => {
-      console.error("Speech recognition error:", event.error);
-      setRunning(false);
-    };
-
-    tr.start();
-    setTranscriber(tr);
-  }
-
-  function toggleListening(): void {
+  const toggleListening = useCallback(() => {
     if (isRunning) {
       setRunning(false);
-      if (transcriber) {
-        transcriber.stop();
-        setTranscriber(null);
-      }
+      stopListening();
+      stopSpeaking();
+      cancelResponse();
     } else {
-      if (!mic) return;
-      setResult("");
+      if (!isMicAvailable) {
+        alert("Please allow microphone access to use this feature.");
+        return;
+      }
       setRunning(true);
-      setupTranscriber();
+      setResponse("");
+      resetTranscript();
+      startListening();
     }
-  }
+  }, [
+    isRunning,
+    isMicAvailable,
+    startListening,
+    stopListening,
+    stopSpeaking,
+    cancelResponse,
+    resetTranscript
+  ]);
+
+  // Show error messages if any
+  const errorMessage = micError || aiError;
 
   return (
     <div className="w-screen h-screen bg-indigo-950 relative flex items-center justify-center overflow-hidden">
-      {/* Main visualization container with centered GIF */}
-      <div className="relative w-[600px] h-[600px]" onClick={toggleListening}
-      >
-        <canvas className="rounded-lg shadow-2xl" id="canvas">
-          Your browser does not support the HTML5 canvas tag.
-        </canvas>
+      {/* Main visualization container */}
+      <div className="relative w-[600px] h-[600px]" onClick={toggleListening}>
+        <AudioVisualizer isRunning={isRunning} mic={mic} />
 
-        {/* Centered GIF with glowing effect overlay */}
+        {/* Centered visualization with glowing effect */}
         <div className="absolute left-1/2 -translate-x-1/2 -top-16 z-10">
           <div className="relative group">
-            {/* Glow effect background */}
             <div className="absolute inset-0 bg-white/10 rounded-full blur-xl group-hover:bg-white/20 transition-all duration-300" />
-
-            {/* Status indicator */}
             <div className="absolute -bottom-8 left-1/2 -translate-x-1/2 w-max">
               <p className="text-white text-sm px-4 py-1 rounded-full bg-indigo-600/50 backdrop-blur-sm">
                 {isRunning ? "Tap to stop" : "Tap to start"}
@@ -252,25 +108,40 @@ function App(): JSX.Element {
         </div>
       </div>
 
-      {/* Results panel */}
+      {/* Transcription panel */}
       <div className="absolute bottom-8 left-1/2 -translate-x-1/2 w-2/3 max-w-3xl">
         <div className="bg-indigo-900/50 p-6 rounded-lg backdrop-blur-sm shadow-lg">
           <p className="text-white text-lg leading-relaxed max-h-48 overflow-y-auto">
-            {result || "Your speech will appear here..."}
+            {transcript}
+            {interimTranscript && (
+              <span className="text-white/70 italic">
+                {' '}{interimTranscript}
+              </span>
+            )}
           </p>
         </div>
       </div>
 
-      {/* Answer panel */}
-      {ans && (
-        <div className="absolute top-8 right-8 w-1/3 max-w-md">
-          <div className="bg-indigo-900/50 p-6 rounded-lg backdrop-blur-sm shadow-lg">
+      {/* AI Response panel */}
+      <div className="absolute top-8 right-8 w-1/3 max-w-md">
+        <div className="bg-indigo-900/50 p-6 rounded-lg backdrop-blur-sm shadow-lg">
+          {errorMessage && (
+            <div className="mb-4 p-2 bg-red-500/20 rounded text-white text-sm">
+              {errorMessage}
+            </div>
+          )}
+          {isLoading ? (
+            <div className="flex items-center justify-center space-x-2">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white"></div>
+              <p className="text-white">Thinking...</p>
+            </div>
+          ) : (
             <p className="text-white text-lg leading-relaxed max-h-[60vh] overflow-y-auto">
-              {ans}
+              {response || "AI responses will appear here!"}
             </p>
-          </div>
+          )}
         </div>
-      )}
+      </div>
     </div>
   );
 }

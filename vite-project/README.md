@@ -1,50 +1,67 @@
-# React + TypeScript + Vite
+# Interactive Voice AI Assistant
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+An interactive voice assistant that uses speech recognition, Gemini AI, and speech synthesis to create an engaging conversation experience with visual audio feedback.
 
-Currently, two official plugins are available:
+## Features
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react/README.md) uses [Babel](https://babeljs.io/) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+- Real-time speech recognition
+- AI-powered responses using Google's Gemini API
+- Cute and friendly voice synthesis
+- Interactive audio visualization
+- Beautiful UI with smooth animations
 
-## Expanding the ESLint configuration
+## Setup
 
-If you are developing a production application, we recommend updating the configuration to enable type aware lint rules:
-
-- Configure the top-level `parserOptions` property like this:
-
-```js
-export default tseslint.config({
-  languageOptions: {
-    // other options...
-    parserOptions: {
-      project: ['./tsconfig.node.json', './tsconfig.app.json'],
-      tsconfigRootDir: import.meta.dirname,
-    },
-  },
-})
+1. Install dependencies:
+```bash
+npm install
+# or
+bun install
 ```
 
-- Replace `tseslint.configs.recommended` to `tseslint.configs.recommendedTypeChecked` or `tseslint.configs.strictTypeChecked`
-- Optionally add `...tseslint.configs.stylisticTypeChecked`
-- Install [eslint-plugin-react](https://github.com/jsx-eslint/eslint-plugin-react) and update the config:
-
-```js
-// eslint.config.js
-import react from 'eslint-plugin-react'
-
-export default tseslint.config({
-  // Set the react version
-  settings: { react: { version: '18.3' } },
-  plugins: {
-    // Add the react plugin
-    react,
-  },
-  rules: {
-    // other rules...
-    // Enable its recommended rules
-    ...react.configs.recommended.rules,
-    ...react.configs['jsx-runtime'].rules,
-  },
-})
+2. Set up environment variables:
+- Copy `.env.example` to `.env`
+- Get your Gemini API key from [Google MakerSuite](https://makersuite.google.com/app/apikey)
+- Add your API key to the `.env` file:
 ```
+VITE_GEMINI_API_KEY=your_api_key_here
+```
+
+3. Run the development server:
+```bash
+npm run dev
+# or
+bun dev
+```
+
+4. Open your browser to the URL shown in the terminal (usually http://localhost:5173)
+
+## How to Use
+
+1. Click the visualization circle to start listening
+2. Speak your question or prompt
+3. The app will:
+   - Show your speech transcription
+   - Generate an AI response using Gemini
+   - Speak back the response in a friendly voice
+4. Click again to stop listening
+
+## Voice Commands
+
+The assistant can:
+- Answer questions
+- Provide explanations
+- Engage in casual conversation
+- Help with tasks
+- Tell jokes and stories
+
+The responses are designed to be friendly, helpful, and concise.
+
+## Browser Support
+
+- Chrome (recommended)
+- Edge
+- Safari (partial support)
+- Firefox (partial support)
+
+Note: Speech recognition and synthesis features work best in Chrome.
