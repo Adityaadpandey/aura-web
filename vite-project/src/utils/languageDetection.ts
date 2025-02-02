@@ -8,7 +8,7 @@ type Language = 'en-US' | 'hi-IN';
 export const isHindiText = (text: string): boolean => {
   // Devanagari Unicode range: \u0900-\u097F
   // Additional Devanagari Unicode blocks: \u0980-\u09FF, \uA8E0-\uA8FF
-  const devanagariRange = /[\u0900-\u097F\u0980-\u09FF\uA8E0-\uA8FF]/;
+  const devanagariRange = /[\u0900-\u097F\u0980-\u09FF-\uA8E0-\uA8FF]/;
   return devanagariRange.test(text);
 };
 

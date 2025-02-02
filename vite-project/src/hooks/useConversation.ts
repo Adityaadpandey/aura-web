@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState } from 'react';
+import { sentimental_prompts } from "../prompts/sentimanetal";
 import { cancelActiveRequest, generateGeminiResponse } from '../services/gemini';
 
 type Language = 'en-US' | 'hi-IN';
@@ -28,7 +29,7 @@ For Hindi responses:
 - Format Hindi text properly with spaces and punctuation
 
 Example Hindi response:
-नमस्ते! मैं आपकी कैसे मदद कर सकता हूं? 😊`;
+नमस्ते! मैं आपकी कैसे मदद कर सकता हूं?`;
 
 const isHindiText = (text: string): boolean => {
   // Unicode range for Devanagari script (0900-097F)
@@ -84,7 +85,7 @@ export function useConversation(): UseConversationResult {
         language: inputLanguage
       });
 
-      const prompt = `${SYSTEM_PROMPT}
+      const prompt = `${SYSTEM_PROMPT + sentimental_prompts}
 
 Previous conversation (maximum 2 turns):
 ${chatHistoryRef.current
@@ -122,8 +123,8 @@ Assistant:`;
           setIsLoading(false);
           processingRef.current = false;
           const errorInLanguage = inputLanguage === 'hi-IN'
-            ? "क्षमा करें, कोई त्रुटि हुई। कृपया पुनः प्रयास करें 🙏"
-            : "Sorry, an error occurred. Please try again 😅";
+            ? "क्षमा करें, कोई त्रुटि हुई। कृपया पुनः प्रयास करें "
+            : "Sorry, an error occurred. Please try again ";
           onStream(errorInLanguage, inputLanguage);
         }
       );
@@ -132,8 +133,8 @@ Assistant:`;
       console.error('Conversation Error:', errorMessage);
       setError(errorMessage);
       const errorInLanguage = inputLanguage === 'hi-IN'
-        ? "क्षमा करें, कुछ गड़बड़ हो गई। कृपया फिर से कोशिश करें 🙏"
-        : "Oops! Something went wrong. Let's try again! 🙈";
+        ? "क्षमा करें, कुछ गड़बड़ हो गई। कृपया फिर से कोशिश करें "
+        : "Oops! Something went wrong. Let's try again! ";
       onStream(errorInLanguage, inputLanguage);
       setIsLoading(false);
       processingRef.current = false;
