@@ -52,8 +52,7 @@ export async function generateGeminiResponse(
           topP: 0.8,
           topK: 40
         },
-        safetySettings: [
-        ]
+        safetySettings: []
       }),
       signal: activeRequest.signal
     });
@@ -69,19 +68,36 @@ export async function generateGeminiResponse(
       throw new Error('No response received from Gemini API');
     }
 
-    // Process response in sentence-sized chunks
-    const sentences = text
-      .replace(/([.!?])\s+/g, '$1|') // Split on sentence endings
-      .split('|')
-      .filter(chunk => chunk.trim())
-      .map(chunk => chunk.trim());
+    // Process response in smaller chunks for more natural streaming
+    const words = text.split(/\s+/);
+    let currentChunk = '';
+    let wordCount = 0;
+    const wordsPerChunk = 3; // Process 3 words at a time for smoother speech
 
-    // Send each sentence as a chunk with a small delay
-    for (let i = 0; i < sentences.length && !activeRequest?.signal.aborted; i++) {
-      onChunk(sentences[i]);
-      if (i < sentences.length - 1) {
-        await new Promise(resolve => setTimeout(resolve, 200));
+    for (let i = 0; i < words.length && !activeRequest?.signal.aborted; i++) {
+      currentChunk += (currentChunk ? ' ' : '') + words[i];
+      wordCount++;
+
+      // Send chunk when we have enough words or at punctuation
+      if (wordCount >= wordsPerChunk ||
+          /[.!?।]$/.test(words[i]) || // End of sentence
+          i === words.length - 1) {    // Last word
+
+        onChunk(currentChunk);
+
+        // Small delay only after sentence endings for natural pauses
+        if (/[.!?।]$/.test(words[i])) {
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+
+        currentChunk = '';
+        wordCount = 0;
       }
+    }
+
+    // Send any remaining text
+    if (currentChunk && !activeRequest?.signal.aborted) {
+      onChunk(currentChunk);
     }
 
     onComplete();

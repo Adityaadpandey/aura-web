@@ -1,83 +1,26 @@
-type Language = 'en-US' | 'hi-IN';
+/**
+ * Language utilities
+ */
+
+export type Language = 'en-US';
 
 /**
- * Checks if text contains Devanagari script (Hindi characters)
- * @param text Text to check
- * @returns boolean indicating if text contains Hindi characters
+ * Gets a language-appropriate error message
  */
-export const isHindiText = (text: string): boolean => {
-  // Devanagari Unicode range: \u0900-\u097F
-  // Additional Devanagari Unicode blocks: \u0980-\u09FF, \uA8E0-\uA8FF
-  const devanagariRange = /[\u0900-\u097F\u0980-\u09FF-\uA8E0-\uA8FF]/;
-  return devanagariRange.test(text);
+export const getLocalizedErrorMessage = (error: string): string => {
+  return `Oops! ${error} 💝`;
 };
 
 /**
- * Detects the primary language of the text
- * @param text Text to analyze
- * @returns Language code ('en-US' or 'hi-IN')
+ * Gets a language-appropriate loading message
  */
-export const detectLanguage = (text: string): Language => {
-  // Count Hindi characters
-  const hindiChars = text.split('').filter(char =>
-    /[\u0900-\u097F]|[\u0980-\u09FF]|[\uA8E0-\uA8FF]/.test(char)
-  ).length;
-
-  // If text contains significant Hindi characters (more than 10%), treat as Hindi
-  return hindiChars > text.length * 0.1 ? 'hi-IN' : 'en-US';
+export const getLocalizedLoadingMessage = (): string => {
+  return 'Thinking about it... 💭';
 };
 
 /**
- * Gets voice parameters for a specific language
- * @param language Language code
- * @returns Voice configuration for speech synthesis
+ * Gets a language-appropriate placeholder message
  */
-export const getVoiceParams = (language: Language) => {
-  switch (language) {
-    case 'hi-IN':
-      return {
-        pitch: 1.0,    // Normal pitch for Hindi
-        rate: 0.9,     // Slightly slower for Hindi clarity
-        volume: 1,
-        preferredVoices: [
-          'hi-IN-Wavenet-A',
-          'hi-IN-Standard-A',
-          'Microsoft Kalpana',
-          (voice: SpeechSynthesisVoice) => voice.lang.startsWith('hi'),
-        ]
-      };
-    case 'en-US':
-      return {
-        pitch: 1.1,    // Slightly higher for English
-        rate: 1.1,     // Slightly faster for English
-        volume: 1,
-        preferredVoices: [
-          'Microsoft Zira Desktop',
-          (voice: SpeechSynthesisVoice) => voice.name.toLowerCase().includes('female') && voice.lang.startsWith('en'),
-          (voice: SpeechSynthesisVoice) => voice.lang.startsWith('en'),
-        ]
-      };
-  }
-};
-
-/**
- * Splits text into natural sentences based on language
- * @param text Text to split
- * @param language Language code
- * @returns Array of sentences
- */
-export const splitIntoSentences = (text: string, language: Language): string[] => {
-  if (language === 'hi-IN') {
-    // Hindi sentence terminators: ।, ?, !
-    return text
-      .split(/([।!?])\s+/)
-      .map(s => s.trim())
-      .filter(s => s.length > 0);
-  }
-
-  // English sentence terminators: . ? !
-  return text
-    .split(/([.!?])\s+/)
-    .map(s => s.trim())
-    .filter(s => s.length > 0);
+export const getLocalizedPlaceholder = (): string => {
+  return 'I\'m here to chat! Say something! 💝';
 };

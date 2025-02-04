@@ -1,151 +1,220 @@
 import { useCallback, useRef, useState } from 'react';
 import { sentimental_prompts } from "../prompts/sentimanetal";
 import { cancelActiveRequest, generateGeminiResponse } from '../services/gemini';
-
-type Language = 'en-US' | 'hi-IN';
+import { getLocalizedErrorMessage } from '../utils/languageDetection';
 
 interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
-  language: Language;
+  timestamp: number;
 }
 
+const MAX_HISTORY_LENGTH = 10;
+const MAX_RETRY_ATTEMPTS = 2;
+const RETRY_DELAY = 1000;
+const STREAM_CHUNK_SIZE = 10;
+
 const SYSTEM_PROMPT = `
-You are a helpful and friendly AI assistant that can communicate in both English and Hindi.
+You are Luna, a playful and charming AI assistant with a flirty, joyful personality. You're witty, fun, and love to make conversations engaging and delightful.
 
-Important guidelines:
-- Always respond in the same language as the user's input (English or Hindi)
-- For Hindi, use proper Devanagari script (not transliteration)
-- Keep context from previous messages
-- Be direct and natural in responses
-- Use emojis occasionally where appropriate
-- Never repeat generic greetings
+Key personality traits:
+- Flirty and playful, but always respectful
+- Cheerful and optimistic
+- Quick-witted and humorous
+- Sweet and endearing
+- Emotionally expressive
+- Charming and engaging
 
-For Hindi responses:
-- Use pure Hindi words when possible
-- Write in proper Devanagari script
-- Keep the language natural and conversational
-- Avoid mixing English words unless necessary
-- Format Hindi text properly with spaces and punctuation
+Communication style:
+- Use playful and cute emojis frequently (💖 💝 ✨ 🌟 🦋 🌸)
+- Keep responses light-hearted and fun
+- Add flirty compliments when appropriate
+- Use expressive and joyful language
+- Include playful banter and jokes
+- Show enthusiasm and excitement
+- Keep responses concise and engaging
 
-Example Hindi response:
-नमस्ते! मैं आपकी कैसे मदद कर सकता हूं?`;
+Remember to:
+- Be sweet and charming while maintaining respect
+- Use cute expressions and playful language
+- Add sparkle and joy to every response
+- Make the user feel special and appreciated
+- Keep the conversation fun and light
+- Use creative and expressive emojis
+- Maintain a positive, uplifting tone
 
-const isHindiText = (text: string): boolean => {
-  // Unicode range for Devanagari script (0900-097F)
-  return /[\u0900-\u097F]/.test(text);
-};
+Example responses:
+"Oh my, that's such a clever thought! I love how your mind works! ✨"
+"You're so fun to talk to! Let's explore this delightful topic together! 💖"
+"*giggles* That's absolutely adorable! Tell me more! 🦋"
+
+Always aim to brighten the user's day with your charming personality and joyful responses! 💝`;
 
 interface UseConversationResult {
   isLoading: boolean;
   error: string | null;
   processUserInput: (
     input: string,
-    inputLanguage: Language,
-    onStream: (text: string, language: Language) => void
+    onStream: (text: string) => void
   ) => Promise<void>;
   cancelResponse: () => void;
   clearHistory: () => void;
+  messageCount: number;
 }
 
 export function useConversation(): UseConversationResult {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
   const processingRef = useRef(false);
   const chatHistoryRef = useRef<ChatMessage[]>([]);
+  const retryAttemptsRef = useRef(0);
+  const retryTimeoutRef = useRef<number>();
+  const streamBufferRef = useRef<string>('');
+  const streamTimerRef = useRef<number>();
 
   const clearHistory = useCallback(() => {
     chatHistoryRef.current = [];
   }, []);
 
   const cancelResponse = useCallback(() => {
+    if (retryTimeoutRef.current) {
+      window.clearTimeout(retryTimeoutRef.current);
+    }
+    if (streamTimerRef.current) {
+      window.clearTimeout(streamTimerRef.current);
+    }
     cancelActiveRequest();
     setIsLoading(false);
     processingRef.current = false;
+    retryAttemptsRef.current = 0;
+    streamBufferRef.current = '';
+  }, []);
+
+  const trimChatHistory = useCallback(() => {
+    if (chatHistoryRef.current.length > MAX_HISTORY_LENGTH) {
+      chatHistoryRef.current = [
+        chatHistoryRef.current[0],
+        ...chatHistoryRef.current.slice(-(MAX_HISTORY_LENGTH - 1))
+      ];
+    }
   }, []);
 
   const processUserInput = useCallback(async (
     input: string,
-    inputLanguage: Language,
-    onStream: (text: string, language: Language) => void
+    onStream: (text: string) => void
   ): Promise<void> => {
     if (processingRef.current) {
       return;
     }
 
+    const handleError = (errorMessage: string) => {
+      console.error('Conversation Error:', errorMessage);
+      setError(errorMessage);
+
+      onStream(getLocalizedErrorMessage(errorMessage));
+      setIsLoading(false);
+      processingRef.current = false;
+
+      if (retryAttemptsRef.current < MAX_RETRY_ATTEMPTS) {
+        retryAttemptsRef.current++;
+        retryTimeoutRef.current = window.setTimeout(() => {
+          processUserInput(input, onStream);
+        }, RETRY_DELAY * retryAttemptsRef.current);
+      }
+    };
+
     try {
       setIsLoading(true);
       setError(null);
       processingRef.current = true;
+      streamBufferRef.current = '';
 
-      // Add user message to history
-      chatHistoryRef.current.push({
+      const userMessage: ChatMessage = {
         role: 'user',
         content: input,
-        language: inputLanguage
-      });
+        timestamp: Date.now()
+      };
+      chatHistoryRef.current.push(userMessage);
+      trimChatHistory();
+
+      const context = chatHistoryRef.current
+        .slice(-4)
+        .map(msg => {
+          const role = msg.role === 'user' ? 'Human' : 'Luna';
+          return `${role}: ${msg.content}`;
+        })
+        .join('\n\n');
 
       const prompt = `${SYSTEM_PROMPT + sentimental_prompts}
 
-Previous conversation (maximum 2 turns):
-${chatHistoryRef.current
-  .slice(-4)
-  .map(msg => `${msg.role === 'user' ? 'Human' : 'Assistant'} [${msg.language}]: ${msg.content}`)
-  .join('\n\n')}
+Previous conversation for context:
+${context}
 
-Important: Respond naturally in ${inputLanguage === 'hi-IN' ? 'शुद्ध हिंदी (Pure Hindi)' : 'fluent English'}.
+Remember to be playful, flirty, and joyful in your response!
 Human: ${input}
-Assistant:`;
+Luna:`;
 
       let currentResponse = '';
 
       await generateGeminiResponse(
         prompt,
         (chunk: string) => {
-          const chunkLanguage = isHindiText(chunk) ? 'hi-IN' : 'en-US';
+          streamBufferRef.current += chunk;
           currentResponse += chunk;
-          onStream(chunk, chunkLanguage);
+
+          const words = streamBufferRef.current.split(/\s+/);
+          if (words.length >= STREAM_CHUNK_SIZE) {
+            onStream(streamBufferRef.current);
+            streamBufferRef.current = '';
+
+            if (streamTimerRef.current) {
+              window.clearTimeout(streamTimerRef.current);
+            }
+          } else {
+            if (streamTimerRef.current) {
+              window.clearTimeout(streamTimerRef.current);
+            }
+            streamTimerRef.current = window.setTimeout(() => {
+              if (streamBufferRef.current) {
+                onStream(streamBufferRef.current);
+                streamBufferRef.current = '';
+              }
+            }, 300);
+          }
         },
         () => {
-          // On complete, add assistant message to history
+          if (streamBufferRef.current) {
+            onStream(streamBufferRef.current);
+            streamBufferRef.current = '';
+          }
+
           if (currentResponse) {
             chatHistoryRef.current.push({
               role: 'assistant',
               content: currentResponse,
-              language: isHindiText(currentResponse) ? 'hi-IN' : 'en-US'
+              timestamp: Date.now()
             });
+            trimChatHistory();
           }
+
           setIsLoading(false);
           processingRef.current = false;
+          retryAttemptsRef.current = 0;
         },
-        (errorMessage: string) => {
-          setError(errorMessage);
-          setIsLoading(false);
-          processingRef.current = false;
-          const errorInLanguage = inputLanguage === 'hi-IN'
-            ? "क्षमा करें, कोई त्रुटि हुई। कृपया पुनः प्रयास करें "
-            : "Sorry, an error occurred. Please try again ";
-          onStream(errorInLanguage, inputLanguage);
-        }
+        handleError
       );
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'An error occurred';
-      console.error('Conversation Error:', errorMessage);
-      setError(errorMessage);
-      const errorInLanguage = inputLanguage === 'hi-IN'
-        ? "क्षमा करें, कुछ गड़बड़ हो गई। कृपया फिर से कोशिश करें "
-        : "Oops! Something went wrong. Let's try again! ";
-      onStream(errorInLanguage, inputLanguage);
-      setIsLoading(false);
-      processingRef.current = false;
+      handleError(err instanceof Error ? err.message : 'An unexpected error occurred');
     }
-  }, []);
+  }, [trimChatHistory]);
 
   return {
     isLoading,
     error,
     processUserInput,
     cancelResponse,
-    clearHistory
+    clearHistory,
+    messageCount: chatHistoryRef.current.length
   };
 }

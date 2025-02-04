@@ -1,178 +1,118 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-
-type Language = 'en-US' | 'hi-IN';
+import { websocketService } from '../services/websocketService';
 
 interface UseSpeechSynthesisResult {
-  speak: (text: string, language?: Language) => void;
+  speak: (text: string) => void;
   stop: () => void;
   isReady: boolean;
   isSpeaking: boolean;
-  availableVoices: {
-    [key in Language]: SpeechSynthesisVoice[];
-  };
 }
 
+const READY_CHECK_INTERVAL = 1000; // Check WebSocket readiness every second
+
 export function useSpeechSynthesis(): UseSpeechSynthesisResult {
-  const synthRef = useRef<SpeechSynthesis>();
-  const voiceRef = useRef<{
-    [key in Language]: SpeechSynthesisVoice | null;
-  }>({
-    'en-US': null,
-    'hi-IN': null
-  });
   const [isReady, setIsReady] = useState(false);
   const isSpeakingRef = useRef(false);
-  const utteranceQueueRef = useRef<Array<{ text: string; lang: Language }>>([]);
-  const currentUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
-  const [availableVoices, setAvailableVoices] = useState<{
-    [key in Language]: SpeechSynthesisVoice[];
-  }>({
-    'en-US': [],
-    'hi-IN': []
-  });
+  const currentChunkRef = useRef<string>('');
+  const readyCheckIntervalRef = useRef<number>();
 
-  const findOptimalVoice = (voices: SpeechSynthesisVoice[], language: Language): SpeechSynthesisVoice | null => {
-    const langPrefix = language === 'hi-IN' ? 'hi' : 'en';
-
-    // Priority order for voice selection
-    const priorities = [
-      // For English
-      ...(language === 'en-US' ? [
-        (v: SpeechSynthesisVoice) => v.name === 'Microsoft Zira Desktop',
-        (v: SpeechSynthesisVoice) => v.name.toLowerCase().includes('female') && v.lang.startsWith('en'),
-      ] : []),
-      // For Hindi
-      ...(language === 'hi-IN' ? [
-        (v: SpeechSynthesisVoice) => v.lang.startsWith('hi'),
-        (v: SpeechSynthesisVoice) => v.name.toLowerCase().includes('hindi'),
-      ] : []),
-      // Fallback
-      (v: SpeechSynthesisVoice) => v.lang.startsWith(langPrefix),
-    ];
-
-    for (const priority of priorities) {
-      const match = voices.find(priority);
-      if (match) return match;
-    }
-
-    return voices.find(v => v.lang.startsWith(langPrefix)) || null;
-  };
-
+  // Monitor WebSocket connection state
   useEffect(() => {
-    synthRef.current = window.speechSynthesis;
-
-    const updateVoices = () => {
-      const voices = synthRef.current?.getVoices() || [];
-      const categorizedVoices = {
-        'en-US': voices.filter(v => v.lang.startsWith('en')),
-        'hi-IN': voices.filter(v => v.lang.startsWith('hi'))
-      };
-
-      setAvailableVoices(categorizedVoices);
-
-      // Set optimal voices for each language
-      voiceRef.current = {
-        'en-US': findOptimalVoice(voices, 'en-US'),
-        'hi-IN': findOptimalVoice(voices, 'hi-IN')
-      };
-
-      setIsReady(true);
+    const checkConnection = () => {
+      const isConnected = websocketService.isConnected();
+      setIsReady(isConnected);
     };
 
-    updateVoices();
-    if (speechSynthesis.onvoiceschanged !== undefined) {
-      speechSynthesis.onvoiceschanged = updateVoices;
-    }
+    // Initial check
+    checkConnection();
+
+    // Set up periodic checking
+    readyCheckIntervalRef.current = window.setInterval(checkConnection, READY_CHECK_INTERVAL);
 
     return () => {
+      if (readyCheckIntervalRef.current) {
+        window.clearInterval(readyCheckIntervalRef.current);
+      }
       stop();
     };
   }, []);
 
-  const processNextInQueue = useCallback(() => {
-    if (!synthRef.current || isSpeakingRef.current || utteranceQueueRef.current.length === 0) {
-      return;
-    }
+  const speak = useCallback(async (text: string) => {
+    if (!text.trim() || !isReady) return;
 
-    const nextItem = utteranceQueueRef.current.shift();
-    if (!nextItem) return;
-
-    isSpeakingRef.current = true;
-    const utterance = new SpeechSynthesisUtterance(nextItem.text);
-    currentUtteranceRef.current = utterance;
-
-    // Configure voice settings
-    const voice = voiceRef.current[nextItem.lang];
-    if (voice) {
-      utterance.voice = voice;
-      utterance.lang = voice.lang;
-    }
-
-    // Optimize voice settings based on language
-    if (nextItem.lang === 'en-US') {
-      utterance.pitch = 1.1;  // Slightly higher pitch for English
-      utterance.rate = 1.1;   // Slightly faster for English
-    } else {
-      utterance.pitch = 1.0;  // Normal pitch for Hindi
-      utterance.rate = 0.9;   // Slightly slower for Hindi for better clarity
-    }
-    utterance.volume = 1;
-
-    // Handle events
-    utterance.onend = () => {
-      isSpeakingRef.current = false;
-      currentUtteranceRef.current = null;
-      processNextInQueue();
-    };
-
-    utterance.onerror = () => {
-      isSpeakingRef.current = false;
-      currentUtteranceRef.current = null;
-      processNextInQueue();
-    };
-
-    try {
-      synthRef.current.speak(utterance);
-    } catch (error) {
-      console.error('Speech synthesis error:', error);
-      isSpeakingRef.current = false;
-      currentUtteranceRef.current = null;
-    }
-  }, []);
-
-  const speak = useCallback((text: string, language: Language = 'en-US') => {
-    if (!text.trim()) return;
-
-    // Split into smaller chunks for more natural speech
+    // Split text into chunks at natural pause points
     const chunks = text
-      .replace(/([.!?।])\s+/g, '$1|') // Split on sentence endings (including Hindi)
-      .split('|')
+      .split(/([,.!?]|\s+and\s+|\s+but\s+|\s+or\s+|\s+so\s+)/)
       .filter(chunk => chunk.trim())
       .map(chunk => chunk.trim());
 
-    // Add chunks to queue with language
-    utteranceQueueRef.current.push(...chunks.map(chunk => ({ text: chunk, lang: language })));
-
-    // Process queue if not currently speaking
-    if (!isSpeakingRef.current) {
-      processNextInQueue();
+    // For very short text, synthesize immediately
+    if (chunks.length === 1 || text.length < 50) {
+      await synthesizeChunk(text);
+      return;
     }
-  }, [processNextInQueue]);
+
+    // For longer texts, combine chunks into natural phrases
+    let currentPhrase = '';
+    let delay = 0;
+
+    for (const chunk of chunks) {
+      if (currentPhrase.length + chunk.length > 30) {
+        const phrase = currentPhrase;
+        // Use setTimeout to sequence the chunks with natural timing
+        setTimeout(() => {
+          synthesizeChunk(phrase);
+        }, delay);
+        delay += 300; // Add slight delay between phrases
+        currentPhrase = chunk;
+      } else {
+        currentPhrase += (currentPhrase ? ' ' : '') + chunk;
+      }
+    }
+
+    // Handle the last phrase
+    if (currentPhrase) {
+      setTimeout(() => {
+        synthesizeChunk(currentPhrase);
+      }, delay);
+    }
+  }, [isReady]);
+
+  const synthesizeChunk = async (text: string) => {
+    if (!text.trim() || isSpeakingRef.current || !isReady) return;
+
+    try {
+      isSpeakingRef.current = true;
+      currentChunkRef.current = text;
+
+      await websocketService.synthesize(text);
+
+      // Wait briefly to ensure audio starts playing
+      await new Promise(resolve => setTimeout(resolve, 100));
+    } catch (error) {
+      console.error('Speech synthesis error:', error);
+    } finally {
+      // Reset speaking state after a delay proportional to text length
+      const delay = Math.max(500, text.length * 50); // Rough estimate of speech duration
+      setTimeout(() => {
+        if (currentChunkRef.current === text) {
+          isSpeakingRef.current = false;
+          currentChunkRef.current = '';
+        }
+      }, delay);
+    }
+  };
 
   const stop = useCallback(() => {
-    if (synthRef.current) {
-      synthRef.current.cancel();
-    }
-    utteranceQueueRef.current = [];
+    websocketService.stop();
     isSpeakingRef.current = false;
-    currentUtteranceRef.current = null;
+    currentChunkRef.current = '';
   }, []);
 
   return {
     speak,
     stop,
     isReady,
-    isSpeaking: isSpeakingRef.current,
-    availableVoices
+    isSpeaking: isSpeakingRef.current
   };
 }

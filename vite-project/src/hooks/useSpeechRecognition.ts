@@ -43,8 +43,6 @@ declare global {
   }
 }
 
-type Language = 'en-US' | 'hi-IN';
-
 interface UseSpeechRecognitionResult {
   isListening: boolean;
   transcript: string;
@@ -53,30 +51,27 @@ interface UseSpeechRecognitionResult {
   stopListening: () => void;
   resetTranscript: () => void;
   error: string | null;
-  language: Language;
-  setLanguage: (lang: Language) => void;
-  detectedLanguage: Language | null;
+  connectionStatus: 'connected' | 'disconnected' | 'error';
 }
 
-const isHindiText = (text: string): boolean => {
-  // Unicode range for Devanagari script
-  const devanagariRange = /[\u0900-\u097F]/;
-  return devanagariRange.test(text);
-};
+const MAX_RESTART_ATTEMPTS = 3;
+const RESTART_DELAY = 1000;
+const CONFIDENCE_THRESHOLD = 0.6; // Higher confidence threshold for better accuracy
 
 export function useSpeechRecognition(
-  onTranscriptComplete?: (text: string, detectedLang: Language) => void
+  onTranscriptComplete?: (text: string) => void
 ): UseSpeechRecognitionResult {
   const [isListening, setIsListening] = useState(false);
   const [transcript, setTranscript] = useState('');
   const [interimTranscript, setInterimTranscript] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [language, setLanguage] = useState<Language>('en-US');
-  const [detectedLanguage, setDetectedLanguage] = useState<Language | null>(null);
+  const [connectionStatus, setConnectionStatus] = useState<'connected' | 'disconnected' | 'error'>('disconnected');
 
   const recognizerRef = useRef<SpeechRecognition | null>(null);
   const isListeningRef = useRef(isListening);
   const lastProcessedResultRef = useRef<string>('');
+  const restartAttemptsRef = useRef(0);
+  const reconnectTimeoutRef = useRef<number>();
 
   useEffect(() => {
     isListeningRef.current = isListening;
@@ -85,6 +80,9 @@ export function useSpeechRecognition(
         recognizerRef.current.abort();
         recognizerRef.current = null;
       }
+      if (reconnectTimeoutRef.current) {
+        window.clearTimeout(reconnectTimeoutRef.current);
+      }
     };
   }, [isListening]);
 
@@ -92,10 +90,35 @@ export function useSpeechRecognition(
     setTranscript('');
     setInterimTranscript('');
     lastProcessedResultRef.current = '';
-    setDetectedLanguage(null);
   }, []);
 
-  const setupRecognizer = () => {
+  const handleRecognitionError = useCallback((errorMessage: string) => {
+    console.error('Speech recognition error:', errorMessage);
+    setError(errorMessage);
+    setConnectionStatus('error');
+
+    if (isListeningRef.current && restartAttemptsRef.current < MAX_RESTART_ATTEMPTS) {
+      restartAttemptsRef.current++;
+      reconnectTimeoutRef.current = window.setTimeout(() => {
+        if (recognizerRef.current) {
+          try {
+            recognizerRef.current.start();
+            setConnectionStatus('connected');
+          } catch {
+            handleRecognitionError('Failed to restart recognition');
+          }
+        }
+      }, RESTART_DELAY);
+    } else {
+      setIsListening(false);
+      if (recognizerRef.current) {
+        recognizerRef.current.abort();
+        recognizerRef.current = null;
+      }
+    }
+  }, []);
+
+  const setupRecognizer = useCallback(() => {
     if (!window.webkitSpeechRecognition) {
       throw new Error('Speech recognition is not supported in this browser');
     }
@@ -103,42 +126,25 @@ export function useSpeechRecognition(
     const recognizer = new window.webkitSpeechRecognition();
     recognizer.continuous = true;
     recognizer.interimResults = true;
-    recognizer.lang = language;
-    recognizer.maxAlternatives = 1;
+    recognizer.lang = 'en-US'; // English only
 
     let finalTranscript = '';
 
     recognizer.onresult = (event: SpeechRecognitionEvent) => {
       let currentInterim = '';
+      setConnectionStatus('connected');
 
       for (let i = 0; i < event.results.length; i++) {
         const result = event.results[i];
         const transcript = result[0].transcript.trim();
 
-        if (result[0].confidence > 0) {
-          // Detect language based on Devanagari characters
-          const detected: Language = isHindiText(transcript) ? 'hi-IN' : 'en-US';
-          if (detected !== detectedLanguage) {
-            setDetectedLanguage(detected);
-            // Update recognizer language if different
-            if (detected !== recognizer.lang) {
-              recognizer.stop();
-              recognizer.lang = detected;
-              recognizer.start();
-            }
-          }
-        }
-
         if (result.isFinal) {
-          // Only process if this is a new final result
           if (transcript && transcript !== lastProcessedResultRef.current) {
             lastProcessedResultRef.current = transcript;
             finalTranscript = transcript;
 
-            // Call callback with detected language
-            if (onTranscriptComplete) {
-              const detectedLang: Language = isHindiText(transcript) ? 'hi-IN' : 'en-US';
-              onTranscriptComplete(transcript, detectedLang);
+            if (onTranscriptComplete && result[0].confidence > CONFIDENCE_THRESHOLD) {
+              onTranscriptComplete(transcript);
             }
           }
         } else {
@@ -148,7 +154,7 @@ export function useSpeechRecognition(
 
       if (finalTranscript) {
         setTranscript(finalTranscript);
-        finalTranscript = ''; // Reset after setting
+        finalTranscript = '';
       }
       setInterimTranscript(currentInterim);
     };
@@ -157,33 +163,28 @@ export function useSpeechRecognition(
       if (isListeningRef.current) {
         try {
           recognizer.start();
-        } catch (error) {
-          console.error('Failed to restart recognition:', error);
-          setIsListening(false);
+        } catch {
+          handleRecognitionError('Failed to restart recognition');
         }
+      } else {
+        setConnectionStatus('disconnected');
       }
     };
 
     recognizer.onerror = (event: SpeechRecognitionError) => {
-      console.error('Speech recognition error:', event.error);
-      setError(event.error);
-      setIsListening(false);
-      if (recognizerRef.current) {
-        recognizerRef.current.abort();
-        recognizerRef.current = null;
-      }
+      handleRecognitionError(event.error);
     };
 
     return recognizer;
-  };
+  }, [onTranscriptComplete, handleRecognitionError]);
 
   const startListening = useCallback(() => {
     try {
       setError(null);
       resetTranscript();
       setIsListening(true);
+      restartAttemptsRef.current = 0;
 
-      // Clean up existing recognizer
       if (recognizerRef.current) {
         recognizerRef.current.abort();
         recognizerRef.current = null;
@@ -192,10 +193,10 @@ export function useSpeechRecognition(
       recognizerRef.current = setupRecognizer();
       recognizerRef.current.start();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to start speech recognition');
+      handleRecognitionError(err instanceof Error ? err.message : 'Failed to start speech recognition');
       setIsListening(false);
     }
-  }, [resetTranscript, language]);
+  }, [resetTranscript, setupRecognizer, handleRecognitionError]);
 
   const stopListening = useCallback(() => {
     setIsListening(false);
@@ -204,6 +205,7 @@ export function useSpeechRecognition(
       recognizerRef.current = null;
     }
     setInterimTranscript('');
+    setConnectionStatus('disconnected');
   }, []);
 
   return {
@@ -214,8 +216,6 @@ export function useSpeechRecognition(
     stopListening,
     resetTranscript,
     error,
-    language,
-    setLanguage,
-    detectedLanguage
+    connectionStatus
   };
 }
